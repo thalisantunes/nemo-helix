@@ -81,6 +81,13 @@ scaled-evals = [
   # server image in k8s/helm/examples/opensandbox.
   "opensandbox-server==0.2.1",
 ]
+# The strands-harness-optimizer plugin is opt-in for the same reason: a path dependency
+# outside `enabled-plugins` and `nemo-helix[all]`, so it is installed on demand with
+# `uv sync --frozen --all-packages --group strands-harness-optimizer` and pulls in Strands only
+# for those who ask. CI runs its tests in a dedicated job that asks for this group.
+strands-harness-optimizer = [
+  "strands-harness-optimizer-plugin",
+]
 dev = [
   "pre-commit>=3.8.0",
   "pydantic-settings>=2.6.1",
@@ -461,6 +468,7 @@ nemo-compass-plugin = { workspace = true }
 
 nemo-evals-plugin = { workspace = true }
 nemo-scaled-evals-plugin = { path = "plugins/_temporary-scaled-evals", editable = true }
+strands-harness-optimizer-plugin = { path = "plugins/strands-harness-optimizer", editable = true }
 nemo-guardrails-plugin = { workspace = true }
 nemo-garak-plugin = { workspace = true }
 nemo-safe-synthesizer-plugin = { workspace = true }
@@ -655,6 +663,9 @@ extra-paths = [
   # prompt-master plugin is not a workspace member; add its src so ty can
   # resolve prompt_master_plugin imports when checking plugin test files.
   "plugins/prompt-master/src",
+  # strands-harness-optimizer plugin is opt-in; its src lets ty resolve the package
+  # from the plugin's tests.
+  "plugins/strands-harness-optimizer/src",
   # Source path for nemo-sandboxed-gym; its tests import the package under test.
   "packages/sandboxed_gym/src",
 ]

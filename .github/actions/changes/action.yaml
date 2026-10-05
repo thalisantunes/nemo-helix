@@ -34,6 +34,9 @@ outputs:
   scaled-evals:
     description: "'true' if the temporary scaled-evals plugin changed"
     value: ${{ steps.filter.outputs.scaled-evals }}
+  strands-harness-optimizer:
+    description: "'true' if the opt-in strands-harness-optimizer plugin changed"
+    value: ${{ steps.filter.outputs.strands-harness-optimizer }}
   e2e:
     description: "'true' if any e2e test files changed"
     value: ${{ steps.filter.outputs.e2e }}
@@ -215,6 +218,11 @@ runs:
             - 'services/core/secrets/src/nhx/core/secrets/service.py'
             # test_service_storage_auth_integration.py imports EntitiesService.
             - 'services/core/entities/src/nhx/core/entities/service.py'
+          strands-harness-optimizer:
+            - 'plugins/strands-harness-optimizer/**'
+            - 'plugins/nemo-agent-optimization/**'
+            - 'plugins/nemo-agents/**'
+            - 'packages/nemo_helix_plugin/**'
           e2e:
             - 'e2e/**'
           docs:
