@@ -13,6 +13,8 @@ with the Files service, testing:
 - Range requests for parquet files
 """
 
+import os
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterator
 from unittest.mock import patch
@@ -20,8 +22,10 @@ from unittest.mock import patch
 import anyio
 import duckdb
 import fsspec
+import httpx
 import pandas as pd
 import pytest
+from fastapi.testclient import TestClient
 from filesets import (
     AsyncFilesetFileSystem,
     FilesetFileSystem,
@@ -31,8 +35,12 @@ from filesets import (
     parse_fileset_ref,
 )
 from nemo_helix_plugin.client.client import NemoClient
+from nemo_helix_plugin.client.errors import InternalServerError
+from nemo_helix_plugin.client.types import PLATFORM_DEFAULT_RETRY_POLICY
 from nemo_helix_plugin.files.client import AsyncFilesClient, FilesClient
 from nemo_helix_plugin.files.types import FilesetOutput
+from nhx.testing import ClientContext, TestClientHttpAdapter
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 
 class TestParseFilesetRef:
@@ -2193,3 +2201,95 @@ class TestDirCache:
 
         fs.ls(base)
         assert base not in fs.dircache
+
+
+@dataclass
+class _FailingUploads:
+    """ASGI wrapper around the Files app that fails the next ``failures`` file uploads with a 503.
+
+    The failing upload's body is read in full first, as a throttled storage
+    backend would, so the client's stream is spent before the error arrives.
+    """
+
+    app: ASGIApp
+    failures: int
+    uploads: int = 0
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        is_upload = scope["type"] == "http" and scope["method"] == "PUT" and "/-/" in scope["path"]
+        if is_upload:
+            self.uploads += 1
+        if not is_upload or self.failures == 0:
+            await self.app(scope, receive, send)
+            return
+        self.failures -= 1
+        while (await receive()).get("more_body"):
+            pass
+        await send({"type": "http.response.start", "status": 503, "headers": [(b"content-type", b"application/json")]})
+        await send({"type": "http.response.body", "body": b'{"detail": "storage throttled"}'})
+
+
+class TestPutFileRetry:
+    """put_file re-sends the whole local file when the upload fails with a retryable status."""
+
+    POLICY = replace(PLATFORM_DEFAULT_RETRY_POLICY, backoff_base=0)
+
+    @pytest.fixture
+    def local_file(self, tmp_path: Path) -> tuple[Path, bytes]:
+        payload = os.urandom(10_000)
+        path = tmp_path / "upload.bin"
+        path.write_bytes(payload)
+        return path, payload
+
+    @pytest.mark.parametrize("failures", [1, 10], ids=["recovers", "gives-up"])
+    def test_sync(
+        self,
+        client_context: ClientContext,
+        fileset: FilesetOutput,
+        local_file: tuple[Path, bytes],
+        failures: int,
+    ) -> None:
+        real = client_context.test_client
+        app = _FailingUploads(real.app, failures)
+        http = TestClientHttpAdapter(TestClient(app, base_url=str(real.base_url), headers=dict(real.headers)))
+        client = FilesClient(base_url=str(real.base_url), http_client=http, retry=self.POLICY)
+        fs = FilesetFileSystem(client=client, blocksize=1024, skip_instance_cache=True)
+        path, payload = local_file
+        remote = f"{fileset.workspace}/{fileset.name}/upload.bin"
+
+        if failures > self.POLICY.max_retries:
+            with pytest.raises(InternalServerError):
+                fs.put_file(str(path), remote)
+            assert app.uploads == self.POLICY.max_retries + 1
+        else:
+            fs.put_file(str(path), remote)
+            assert app.uploads == failures + 1
+            assert fs.cat(remote) == payload
+
+    @pytest.mark.parametrize("failures", [1, 10], ids=["recovers", "gives-up"])
+    async def test_async(
+        self,
+        client_context: ClientContext,
+        fileset: FilesetOutput,
+        local_file: tuple[Path, bytes],
+        failures: int,
+    ) -> None:
+        real = client_context.test_client
+        app = _FailingUploads(real.app, failures)
+        base_url = str(real.base_url)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=base_url, headers=dict(real.headers)
+        ) as http:
+            client = AsyncFilesClient(base_url=base_url, http_client=http, retry=self.POLICY)
+            fs = AsyncFilesetFileSystem(client=client, blocksize=1024, skip_instance_cache=True)
+            path, payload = local_file
+            remote = f"{fileset.workspace}/{fileset.name}/upload.bin"
+
+            if failures > self.POLICY.max_retries:
+                with pytest.raises(InternalServerError):
+                    await fs._put_file(str(path), remote)
+                assert app.uploads == self.POLICY.max_retries + 1
+            else:
+                await fs._put_file(str(path), remote)
+                assert app.uploads == failures + 1
+                assert await fs._cat_file(remote) == payload

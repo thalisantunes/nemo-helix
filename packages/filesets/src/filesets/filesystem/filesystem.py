@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import os
+import time
 from collections.abc import AsyncIterator, Coroutine, Iterator, Sequence
 from datetime import datetime, timezone
 from glob import has_magic
@@ -16,13 +18,17 @@ from typing import Any, Literal, TypedDict, TypeVar, overload
 import anyio
 import httpx
 from anyio import to_thread
+from filesets.filesystem.upload_retry import upload_retry_delay
 from fsspec.asyn import AbstractAsyncStreamedFile, AsyncFileSystem, _get_batch_size
 from fsspec.callbacks import DEFAULT_CALLBACK, Callback
 from fsspec.implementations.local import LocalFileSystem, make_path_posix, trailing_sep
 from fsspec.spec import AbstractBufferedFile, AbstractFileSystem
 from fsspec.utils import other_paths
+from nemo_helix_plugin.client.errors import NemoHTTPError, NemoTransportError
 from nemo_helix_plugin.files.client import AsyncFilesClient, FilesClient
 from nemo_helix_plugin.files.types import FilesetFileOutput, ListFilesQueryParams
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -585,7 +591,11 @@ class FilesetFileSystem(AbstractFileSystem):
         mode: str = "overwrite",
         **kwargs,
     ) -> None:
-        """Upload a local file to a fileset."""
+        """Upload a local file to a fileset.
+
+        Failures the client's retry policy allows are retried by reopening the
+        file and sending it again in full.
+        """
         workspace, fileset, file_path = parse_fileset_ref(rpath, workspace_fallback=self._workspace)
         if not file_path:
             raise ValueError("File path required for upload")
@@ -594,17 +604,25 @@ class FilesetFileSystem(AbstractFileSystem):
         callback.set_size(file_size)
 
         def stream_file() -> Iterator[bytes]:
+            callback.absolute_update(0)
             with open(lpath, "rb") as f:
                 while chunk := f.read(self.blocksize):
                     callback.relative_update(len(chunk))
                     yield chunk
 
-        self._client.with_headers({"Content-Length": str(file_size)}).upload_file(
-            workspace=workspace,
-            name=fileset,
-            path=file_path,
-            content=stream_file(),
-        )
+        client = self._client.with_headers({"Content-Length": str(file_size)})
+        attempt = 0
+        while True:
+            try:
+                client.upload_file(workspace=workspace, name=fileset, path=file_path, content=stream_file())
+                break
+            except (NemoHTTPError, NemoTransportError) as exc:
+                delay = upload_retry_delay(exc, attempt, self._client.retry)
+                if delay is None:
+                    raise
+                logger.warning("Upload of %s to %s failed (%r); sending it again in %.1fs", lpath, rpath, exc, delay)
+                time.sleep(delay)
+                attempt += 1
         self.invalidate_cache(self._parent(build_fileset_ref(rpath)))
 
     @overload
@@ -1181,6 +1199,8 @@ class AsyncFilesetFileSystem(AsyncFileSystem):
 
         Uses streaming upload to avoid buffering the entire file in memory.
         Supports per-chunk progress via callback.relative_update(chunk_size).
+        Failures the client's retry policy allows are retried by reopening the
+        file and sending it again in full.
         """
         workspace, fileset, file_path = parse_fileset_ref(rpath, workspace_fallback=self._workspace)
         if not file_path:
@@ -1192,17 +1212,25 @@ class AsyncFilesetFileSystem(AsyncFileSystem):
 
         # Create async generator that streams file content with progress
         async def stream_file() -> AsyncIterator[bytes]:
+            callback.absolute_update(0)
             async with await anyio.open_file(lpath, "rb") as f:
                 while chunk := await f.read(self.blocksize):
                     callback.relative_update(len(chunk))
                     yield chunk
 
-        await self._client.with_headers({"Content-Length": str(file_size)}).upload_file(
-            workspace=workspace,
-            name=fileset,
-            path=file_path,
-            content=stream_file(),
-        )
+        client = self._client.with_headers({"Content-Length": str(file_size)})
+        attempt = 0
+        while True:
+            try:
+                await client.upload_file(workspace=workspace, name=fileset, path=file_path, content=stream_file())
+                break
+            except (NemoHTTPError, NemoTransportError) as exc:
+                delay = upload_retry_delay(exc, attempt, self._client.retry)
+                if delay is None:
+                    raise
+                logger.warning("Upload of %s to %s failed (%r); sending it again in %.1fs", lpath, rpath, exc, delay)
+                await anyio.sleep(delay)
+                attempt += 1
         # Invalidate parent directory's cache since file info is stored there
         self.invalidate_cache(self._parent(build_fileset_ref(rpath)))
 
