@@ -365,9 +365,10 @@ class ModelEntityBaseModel(BaseModel, ABC):
 # ============================================================================
 
 _AUTH_HEADER_FORMAT_DESCRIPTION = (
-    "Jinja2 template string controlling how the API key secret is sent to the upstream. "
-    "Must contain exactly one variable named `auth_secret`, which is substituted with the "
-    "resolved secret value at request time. "
+    "Literal header format controlling how the API key secret is sent to the upstream. "
+    "Must contain exactly one `{{ auth_secret }}` placeholder, which is replaced with the "
+    "resolved secret value at request time. It is plain text, not a Jinja2 template: no other "
+    "`{` or `}` characters or line breaks are allowed. "
     "Example: `'X-Api-Key: {{ auth_secret }}'`. "
     "If not set, defaults to `'Authorization: Bearer {{ auth_secret }}'`."
 )
@@ -376,7 +377,8 @@ _AUTH_HEADER_FORMAT_DESCRIPTION = (
 # ``auth_header_format`` is NOT a template engine input. It must be literal text around exactly one
 # ``{{ auth_secret }}`` placeholder; no other ``{``/``}`` characters (and no CR/LF) are allowed. The
 # header is built by plain string substitution, so user input is never evaluated.
-_AUTH_HEADER_FORMAT_RE = re.compile(r"([^{}\r\n]*)\{\{\s*auth_secret\s*\}\}([^{}\r\n]*)")
+_AUTH_SECRET_PLACEHOLDER_RE = re.compile(r"\{\{\s*auth_secret\s*\}\}")
+_AUTH_HEADER_FORBIDDEN_CHARS = frozenset("{}\r\n")
 
 
 def _validate_auth_header_format(v: str | None) -> str | None:
@@ -389,13 +391,14 @@ def _validate_auth_header_format(v: str | None) -> str | None:
     """
     if v is None:
         return v
-    match = _AUTH_HEADER_FORMAT_RE.fullmatch(v)
-    if match is None:
+    # Splitting on the placeholder yields [prefix, suffix] iff it appears exactly once.
+    parts = _AUTH_SECRET_PLACEHOLDER_RE.split(v)
+    if len(parts) != 2 or any(_AUTH_HEADER_FORBIDDEN_CHARS.intersection(part) for part in parts):
         raise ValueError(
             "auth_header_format must contain exactly one '{{ auth_secret }}' placeholder "
             "and no other template syntax ('{' or '}' characters or line breaks)"
         )
-    rendered = match.group(1) + "__AUTH_SECRET__" + match.group(2)
+    rendered = parts[0] + "__AUTH_SECRET__" + parts[1]
     header_name, sep, header_value = rendered.partition(": ")
     if not sep or not header_name.strip() or not header_value.strip():
         raise ValueError("auth_header_format must render to '<Header-Name>: <Header-Value>'")

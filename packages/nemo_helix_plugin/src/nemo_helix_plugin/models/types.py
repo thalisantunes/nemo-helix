@@ -456,9 +456,10 @@ class ModelEntityBaseModel(BaseModel):
 # ---------------------------------------------------------------------------
 
 _AUTH_HEADER_FORMAT_DESCRIPTION = (
-    "Jinja2 template string controlling how the API key secret is sent to the upstream. "
-    "Must contain exactly one variable named `auth_secret`, which is substituted with the "
-    "resolved secret value at request time. "
+    "Literal header format controlling how the API key secret is sent to the upstream. "
+    "Must contain exactly one `{{ auth_secret }}` placeholder, which is replaced with the "
+    "resolved secret value at request time. It is plain text, not a Jinja2 template: no other "
+    "`{` or `}` characters or line breaks are allowed. "
     "Example: `'X-Api-Key: {{ auth_secret }}'`. "
     "If not set, defaults to `'Authorization: Bearer {{ auth_secret }}'`."
 )
