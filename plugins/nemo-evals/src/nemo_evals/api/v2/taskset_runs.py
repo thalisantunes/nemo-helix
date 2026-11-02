@@ -25,7 +25,8 @@ from nemo_evals.api.taskset_run_schemas import (
 from nemo_evals.authz import scope
 from nemo_evals.harbor.remote.preparation import ImagePreparationUnavailableError
 from nemo_evals.taskset_runs.entities import MemberPhase
-from nemo_evals.taskset_runs.store import PlanStorageError, RunRequestConflict
+from nemo_evals.taskset_runs.plan_storage import PlanStoragePermissionDeniedError
+from nemo_evals.taskset_runs.store import RunRequestConflict
 from nemo_evals.taskset_runs.submission import TimeoutAboveMaximumError
 from nemo_evals.taskset_runs.task_jobs import TaskJobsIncompleteError
 from nemo_helix_plugin.authz import CallerKind, PermissionSet, path_rule, perm
@@ -147,11 +148,8 @@ async def submit_taskset_run(
         # The run is already accepted here. Its ID is derived from (workspace, caller, idempotency_key),
         # so a retry with the same key finds this run and creates only its missing Jobs.
         raise _server_error(503, str(exc), key, generated=generated) from exc
-    except PlanStorageError as exc:
-        if isinstance(exc.__cause__, PermissionDeniedError):
-            raise _submission_forbidden(exc.__cause__, workspace, key, generated=generated) from exc
-        logger.exception("Failed to submit taskset run in workspace %s", sanitize_for_log(workspace))
-        raise _server_error(500, "Internal server error", key, generated=generated) from None
+    except PlanStoragePermissionDeniedError as exc:
+        raise _submission_forbidden(exc.permission_error, workspace, key, generated=generated) from exc
     except PermissionDeniedError as exc:
         raise _submission_forbidden(exc, workspace, key, generated=generated) from exc
     except HTTPException:
