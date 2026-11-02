@@ -38,7 +38,11 @@ from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.environments.docker.docker import DockerEnvironment, _sanitize_docker_compose_project_name
 from harbor.models.task.config import TaskConfig
 from harbor.models.trial.config import AgentConfig
-from nhx_evals_sdk.agent_eval.runtimes.harbor.agent_layer import AgentInstall, agent_install
+from nhx_evals_sdk.agent_eval.runtimes.harbor.agent_layer import (
+    FABRIC_CONFIG_BUNDLE_KWARG,
+    AgentInstall,
+    agent_install,
+)
 
 if sys.platform != "win32":
     import fcntl
@@ -51,8 +55,6 @@ LOCK_POLL_INTERVAL_SEC = 0.5
 #: How long a failed or cancelled layer build stops other trials from trying the same build: they install the agent in setup
 #: instead, at once, rather than each repeating the failure in turn while holding the build's lock.
 FAILED_BUILD_COOLDOWN_SEC = 600
-#: The kwarg holding a Fabric agent's config bundle, a directory its setup uploads; never part of a layer.
-FABRIC_CONFIG_BUNDLE_KWARG = "fabric_config_bundle"
 _COMPOSE_LABEL_PREFIX = "com.docker.compose."
 
 
