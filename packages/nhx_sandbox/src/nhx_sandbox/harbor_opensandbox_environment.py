@@ -713,14 +713,14 @@ class NemoOpenSandboxEnvironment(BaseEnvironment):
         if self._agent_bundle is not None and AGENT_BUNDLE_FEATURE not in features:
             raise RuntimeError(
                 "The OpenSandbox server's NeMo compose services extension doesn't support agent bundles; upgrade it to "
-                "the version in plugins/_temporary-scaled-evals/opensandbox_ext."
+                "the current nemo-opensandbox-ext ConfigMap and restart the server."
             )
         # An extension from before them would refuse a spec with no services, or main's command or working directory.
         if self._services is not None and self._services.uses_main_settings() and COMPOSE_MAIN_FEATURE not in features:
             raise RuntimeError(
                 "The OpenSandbox server's NeMo compose services extension doesn't support compose files that only "
-                "change main, or main's command and working directory; upgrade it to the version in "
-                "plugins/_temporary-scaled-evals/opensandbox_ext."
+                "change main, or main's command and working directory; upgrade it to the current "
+                "nemo-opensandbox-ext ConfigMap and restart the server."
             )
 
     async def _services_status(self, sandbox_id: str, deadline: float) -> dict[str, Any]:
