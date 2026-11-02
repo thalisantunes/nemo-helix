@@ -185,6 +185,8 @@ def infer_model_cfg_from_hf(
         tokenizer = AutoTokenizer.from_pretrained(cfg.name_or_path, trust_remote_code=is_trusted)
         is_chat = getattr(tokenizer, "chat_template", None) is not None
 
+    # Read before unwrapping: a multimodal checkpoint's text config only names its language model.
+    architectures = list(getattr(cfg, "architectures", None) or []) or None
     if getattr(cfg, "text_config", None):
         cfg = getattr(cfg, "text_config")
 
@@ -221,6 +223,7 @@ def infer_model_cfg_from_hf(
     # Construct and return full model configuration
     result = ModelSpec(
         **basic_config,
+        architectures=architectures,
         is_chat=is_chat,
         gated_mlp=bool(gated_mlp),
         base_num_parameters=total_params,
