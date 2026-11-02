@@ -21,6 +21,7 @@ from nemo_evals.taskset_runs import store as store_module
 from nemo_evals.taskset_runs.entities import TasksetRunEntity
 from nemo_evals.taskset_runs.store import PlanStorageError, TasksetRunStore
 from nemo_helix_plugin.client.client import AsyncNemoClient
+from nemo_helix_plugin.client.errors import PermissionDeniedError
 from nemo_helix_plugin.dependencies import get_effective_principal_id
 from nemo_helix_plugin.entities.client import AsyncEntitiesClient
 from nemo_helix_plugin.entities.types import Entity
@@ -391,3 +392,23 @@ async def test_keyless_submits_get_distinct_generated_keys(run_client, published
     assert first.status_code == second.status_code == 201
     assert first.json()["run_id"] != second.json()["run_id"]
     assert len({first.json()["idempotency_key"], second.json()["idempotency_key"]}) == 2
+
+
+@pytest.mark.parametrize("key", ["ci-run", None], ids=["keyed", "keyless"])
+async def test_submit_storage_permission_denial_preserves_key(run_client, service, monkeypatch, request_body, key):
+    denied = PermissionDeniedError(
+        httpx.Response(
+            403,
+            json={"detail": "private storage denial"},
+            request=httpx.Request("POST", "http://entities.test/entities"),
+        )
+    )
+    monkeypatch.setattr(service, "submit", AsyncMock(side_effect=denied))
+    response = await run_client.post(PATH, json=request_body | {"idempotency_key": key})
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Forbidden"}
+    assert response.headers["x-should-retry"] == "false"
+    if key is None:
+        assert response.headers["x-idempotency-key"]
+    else:
+        assert "x-idempotency-key" not in response.headers
