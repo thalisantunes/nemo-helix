@@ -396,6 +396,7 @@ async def test_keyless_submits_get_distinct_generated_keys(run_client, published
 
 @pytest.mark.parametrize("key", ["ci-run", None], ids=["keyed", "keyless"])
 async def test_submit_storage_permission_denial_preserves_key(run_client, service, monkeypatch, request_body, key):
+    """Direct denials hide downstream details and expose generated replay keys in the response body."""
     denied = PermissionDeniedError(
         httpx.Response(
             403,
@@ -406,9 +407,65 @@ async def test_submit_storage_permission_denial_preserves_key(run_client, servic
     monkeypatch.setattr(service, "submit", AsyncMock(side_effect=denied))
     response = await run_client.post(PATH, json=request_body | {"idempotency_key": key})
     assert response.status_code == 403
-    assert response.json() == {"detail": "Forbidden"}
     assert response.headers["x-should-retry"] == "false"
     if key is None:
-        assert response.headers["x-idempotency-key"]
+        generated_key = response.headers["x-idempotency-key"]
+        assert response.json() == {
+            "detail": f"Forbidden; once access is restored, resubmit the same request with idempotency_key={generated_key}"
+        }
+    else:
+        assert response.json() == {"detail": "Forbidden"}
+        assert "x-idempotency-key" not in response.headers
+
+
+@pytest.mark.parametrize("key", ["ci-run", None], ids=["keyed", "keyless"])
+@pytest.mark.parametrize("operation", ["create", "upload"])
+@pytest.mark.parametrize("status_code", [403, 400], ids=["denied", "other-failure"])
+async def test_plan_write_failures_preserve_http_status_and_cleanup(
+    run_client, published, request_body, files_service, entity_store, fake_task_jobs, key, operation, status_code
+):
+    """Wrapped Files denials stay 403; other write failures stay 500 and accept no run."""
+    files_service.failures[operation] = status_code
+    response = await run_client.post(PATH, json=request_body | {"idempotency_key": key})
+    assert response.status_code == (403 if status_code == 403 else 500), response.text
+    detail = response.json()["detail"]
+    assert detail.startswith("Forbidden" if status_code == 403 else "Internal server error")
+    assert "failed" not in detail and "-plan-" not in detail
+    if key is None:
+        generated_key = response.headers["x-idempotency-key"]
+        assert f"idempotency_key={generated_key}" in detail
+        assert response.headers["x-should-retry"] == "false"
     else:
         assert "x-idempotency-key" not in response.headers
+    if status_code == 403:
+        assert response.headers["x-should-retry"] == "false"
+    assert not (await entity_store.list(TasksetRunEntity, workspace="default")).data
+    assert not fake_task_jobs.created
+    assert not files_service.filesets
+
+
+@pytest.mark.parametrize("key", ["ci-run", None], ids=["keyed", "keyless"])
+async def test_plan_read_denied_after_acceptance_can_replay_without_duplicate_run(
+    run_client, published, request_body, files_service, entity_store, fake_task_jobs, key
+):
+    """A Files 403 after acceptance retains the replay key and never creates a second run."""
+    files_service.failures["download"] = 403
+    body = request_body | {"idempotency_key": key}
+    response = await run_client.post(PATH, json=body)
+    assert response.status_code == 403, response.text
+    assert response.headers["x-should-retry"] == "false"
+    replay_key = key or response.headers["x-idempotency-key"]
+    detail = response.json()["detail"]
+    if key is None:
+        assert "once access is restored, resubmit the same request" in detail
+        assert f"idempotency_key={replay_key}" in detail
+    assert "download" not in detail and "-plan-" not in detail
+    (accepted,) = (await entity_store.list(TasksetRunEntity, workspace="default")).data
+    assert accepted.idempotency_key == replay_key
+    assert not fake_task_jobs.created
+    files_service.failures.clear()
+    replay = await run_client.post(PATH, json=body | {"idempotency_key": replay_key})
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["run_id"] == accepted.name
+    assert len((await entity_store.list(TasksetRunEntity, workspace="default")).data) == 1
+    assert len(fake_task_jobs.created) == 1

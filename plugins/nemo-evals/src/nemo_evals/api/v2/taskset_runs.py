@@ -25,7 +25,7 @@ from nemo_evals.api.taskset_run_schemas import (
 from nemo_evals.authz import scope
 from nemo_evals.harbor.remote.preparation import ImagePreparationUnavailableError
 from nemo_evals.taskset_runs.entities import MemberPhase
-from nemo_evals.taskset_runs.store import RunRequestConflict
+from nemo_evals.taskset_runs.store import PlanStorageError, RunRequestConflict
 from nemo_evals.taskset_runs.submission import TimeoutAboveMaximumError
 from nemo_evals.taskset_runs.task_jobs import TaskJobsIncompleteError
 from nemo_helix_plugin.authz import CallerKind, PermissionSet, path_rule, perm
@@ -147,15 +147,13 @@ async def submit_taskset_run(
         # The run is already accepted here. Its ID is derived from (workspace, caller, idempotency_key),
         # so a retry with the same key finds this run and creates only its missing Jobs.
         raise _server_error(503, str(exc), key, generated=generated) from exc
+    except PlanStorageError as exc:
+        if isinstance(exc.__cause__, PermissionDeniedError):
+            raise _submission_forbidden(exc.__cause__, workspace, key, generated=generated) from exc
+        logger.exception("Failed to submit taskset run in workspace %s", sanitize_for_log(workspace))
+        raise _server_error(500, "Internal server error", key, generated=generated) from None
     except PermissionDeniedError as exc:
-        logger.warning(
-            "Downstream permission denied while attempting to submit taskset run in workspace %s (status=%s, request_id=%s)",
-            sanitize_for_log(workspace),
-            exc.status_code,
-            sanitize_for_log(exc.http_response.headers.get("x-request-id", "unknown")),
-        )
-        headers = {"x-should-retry": "false"} | ({"x-idempotency-key": key} if generated else {})
-        raise HTTPException(status_code=403, detail="Forbidden", headers=headers) from exc
+        raise _submission_forbidden(exc, workspace, key, generated=generated) from exc
     except HTTPException:
         raise
     except Exception:
@@ -163,6 +161,22 @@ async def submit_taskset_run(
         raise _server_error(500, "Internal server error", key, generated=generated) from None
     response.status_code = status.HTTP_201_CREATED if outcome.created else status.HTTP_200_OK
     return outcome.status
+
+
+def _submission_forbidden(exc: PermissionDeniedError, workspace: str, key: str, *, generated: bool) -> HTTPException:
+    """Sanitize a downstream denial while retaining the key needed to replay a possibly accepted run."""
+    logger.warning(
+        "Downstream permission denied while attempting to submit taskset run in workspace %s (status=%s, request_id=%s)",
+        sanitize_for_log(workspace),
+        exc.status_code,
+        sanitize_for_log(exc.http_response.headers.get("x-request-id", "unknown")),
+    )
+    headers = {"x-should-retry": "false"}
+    detail = "Forbidden"
+    if generated:
+        headers["x-idempotency-key"] = key
+        detail += f"; once access is restored, resubmit the same request with idempotency_key={key}"
+    return HTTPException(status_code=403, detail=detail, headers=headers)
 
 
 def _server_error(status_code: int, detail: str, key: str, *, generated: bool) -> HTTPException:
