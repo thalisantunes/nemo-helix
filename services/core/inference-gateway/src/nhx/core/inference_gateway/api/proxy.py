@@ -34,6 +34,7 @@ from nemo_helix_plugin.secrets.client import AsyncSecretsClient
 from nhx.common.entities.utils import format_adapter_composite, parse_adapters_suffix, parse_model_entity_ref
 from nhx.core.inference_gateway.api.authz import enforce_model_ref_access
 from nhx.core.inference_gateway.api.backend_format import resolve_backend_format
+from nhx.core.inference_gateway.api.caller_context import caller_headers, context_headers, gateway_seal
 from nhx.core.inference_gateway.api.errors import (
     raise_model_entity_not_found,
     raise_no_providers_for_model_entity,
@@ -49,7 +50,7 @@ from nhx.core.inference_gateway.api.middleware_registry import (
     execute_response_middleware,
 )
 from nhx.core.inference_gateway.api.mock_provider import handle_mock_request, is_mock_provider
-from nhx.core.inference_gateway.api.provider_request import render_auth_header, upstream_credential
+from nhx.core.inference_gateway.api.provider_request import render_auth_header
 from nhx.core.inference_gateway.api.typed_request import build_inference_request
 from pydantic import BaseModel
 
@@ -1084,14 +1085,15 @@ async def virtual_model_proxy(
     instead of silently bypassing the middleware chain. Recovery is automatic
     once the next IGW polling cycle re-resolves the VM cleanly.
     """
-    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    headers = caller_headers(request.headers, model_cache.router_keys(), gateway_seal())
+    request_id = headers.get("x-request-id") or str(uuid.uuid4())
     await execute_access_checks(
         registry.plugins,
         InferenceAccessRequest(
             request_id=request_id,
             workspace=workspace,
             path=trailing_uri,
-            headers=dict(request.headers),
+            headers=dict(headers),
             virtual_model_id=f"{workspace}/{vm_name}",
             requested_model=json_body["model"] if isinstance(json_body.get("model"), str) else None,
         ),
@@ -1157,7 +1159,7 @@ async def virtual_model_proxy(
     # mutating the body), so it must not alias any mutable state the chain can touch.
     original_request = build_inference_request(
         body=copy.deepcopy(json_body),
-        headers=dict(request.headers),
+        headers=dict(headers),
         path=trailing_uri,
     )
     ctx = InferenceMiddlewareContext(
@@ -1169,7 +1171,7 @@ async def virtual_model_proxy(
     )
     initial_request = build_inference_request(
         body=json_body,
-        headers=dict(request.headers),
+        headers=dict(headers),
         path=trailing_uri,
     )
 
@@ -1334,11 +1336,7 @@ async def virtual_model_proxy(
                 request,
                 host_url=resolved_model_provider_info.model_provider.host_url,
                 trailing_uri=proxy_path,
-                auth_token=upstream_credential(
-                    resolved_model_provider_info.model_provider,
-                    resolved_model_provider_info.secret_value,
-                    request.headers,
-                ),
+                auth_token=resolved_model_provider_info.secret_value,
                 auth_header_format=resolved_model_provider_info.model_provider.auth_header_format,
                 body=json_body,
                 default_extra_body=resolved_model_provider_info.model_provider.default_extra_body,
@@ -1346,6 +1344,9 @@ async def virtual_model_proxy(
                 required_extra_body=resolved_model_provider_info.model_provider.required_extra_body,
                 required_extra_headers=resolved_model_provider_info.model_provider.required_extra_headers,
                 request_headers=modified_request.headers,
+            )
+            next_request_info.headers.update(
+                context_headers(resolved_model_provider_info.model_provider, modified_request.headers, gateway_seal())
             )
             proxy_response_result, response_headers, response_status = await fetch_proxy_response(
                 http_client,
