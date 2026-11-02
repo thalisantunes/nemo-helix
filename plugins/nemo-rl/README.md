@@ -163,10 +163,8 @@ selects code that already exists in the image rather than shipping it.
 
 - **Skill:** the `nemo-customizer` skill documents the end-to-end DPO workflow
   (`plugins/nemo-customizer/src/nemo_customizer/skills/nemo-customizer/`).
-- **Design:** [`docs/customizer/nemo-rl-dpo-plugin-design.md`](../../docs/customizer/nemo-rl-dpo-plugin-design.md).
 - **GRPO environment packages:** [`docs/customizer/tutorials/grpo-environment-packages.mdx`](../../docs/customizer/tutorials/grpo-environment-packages.mdx) (`native-v1` / `wheels-v1` / `adapter-wheels-v1`).
 - **GRPO job + cluster:** [`docs/customizer/grpo-training.mdx`](../../docs/customizer/grpo-training.mdx).
-- **GPU e2e smoke test:** [`scripts/gpu-dpo-smoke/`](../../scripts/gpu-dpo-smoke).
 - **Images:** [`docker/rl/Dockerfile.nhx-rl-base`](../../docker/rl/Dockerfile.nhx-rl-base),
   [`docker/rl/Dockerfile.nhx-rl-training`](../../docker/rl/Dockerfile.nhx-rl-training),
   `docker/Dockerfile.nhx-customizer-tasks`.
