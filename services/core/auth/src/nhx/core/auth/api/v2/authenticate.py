@@ -22,7 +22,13 @@ from nemo_helix_plugin.auth.types import (
 from nhx.common.auth.bearer import MalformedBearerTokenError
 from nhx.common.auth.jwt import JWTValidator
 from nhx.common.auth.middleware import request_bearer_token
-from nhx.common.auth.token_claims import ActorClaims, TokenClaims, groups_from_claim, scopes_from_claim
+from nhx.common.auth.token_claims import (
+    ActorClaims,
+    TokenClaims,
+    groups_from_claim,
+    scopes_from_claim,
+    trusted_email_from_claims,
+)
 from nhx.common.auth.token_resolver import ResolvedBearerToken, resolve_bearer_token
 from nhx.common.config import AuthConfig, get_auth_config
 from nhx.core.auth.api.v2.workload_token_exchange import (
@@ -393,10 +399,12 @@ async def _resolve_workload_subject_token(
     if not isinstance(subject, str) or not subject:
         return None
 
-    email = claims.get(config.oidc.email_claim)
+    email = trusted_email_from_claims(config, claims)
+    if email is None and config.oidc.subject_claim == config.oidc.email_claim and config.oidc.require_verified_email:
+        return None
     token_claims = TokenClaims(
         subject=subject,
-        email=email if isinstance(email, str) else None,
+        email=email,
         groups=groups_from_claim(claims.get(config.oidc.groups_claim, claims.get("groups", []))),
         scopes=_scopes_from_claims(claims),
         raw_claims=claims,
