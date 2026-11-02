@@ -5961,6 +5961,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /apis/jobs/v2/workspaces/{workspace}/job-groups/{name}/cancel:
+    post:
+      tags:
+      - Job Groups
+      summary: Cancel Job Group
+      description: 'Request cancellation of a job group.
+
+
+        Cancelling a group of thousands of jobs is one operation for the caller, not
+        a cancel
+
+        per member: this records the group''s ``cancelling`` intent in a single write
+        and returns
+
+        immediately. The per-member teardown -- cancelling every non-terminal member
+        through the
+
+        normal per-job cancel path -- then runs as a background task, off the caller''s
+        request
+
+        path. Once every member reaches a terminal state the group settles to ``cancelled``
+        via
+
+        the member-status roll-up. Idempotent: re-requesting cancellation of an
+
+        already-cancelling group re-drives the teardown sweep.'
+      operationId: cancel_job_group_apis_jobs_v2_workspaces__workspace__job_groups__name__cancel_post
+      parameters:
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Name
+      - name: workspace
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Workspace
+      responses:
+        '200':
+          description: Cancellation requested; the group is now cancelling
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobGroupResponse'
+        '404':
+          description: Job group not found
+        '409':
+          description: The job group has already reached a terminal state
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /apis/jobs/v2/workspaces/{workspace}/jobs:
     post:
       tags:
